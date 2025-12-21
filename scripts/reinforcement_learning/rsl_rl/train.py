@@ -24,6 +24,12 @@ parser.add_argument("--video_interval", type=int, default=2000, help="Interval b
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument(
+    "--mujoco_cpu",
+    action="store_true",
+    default=False,
+    help="(Newton/MJWarp only) Use pure MuJoCo (CPU) backend instead of mujoco_warp to avoid Warp CUDA kernels.",
+)
+parser.add_argument(
     "--agent", type=str, default="rsl_rl_cfg_entry_point", help="Name of the RL agent configuration entry point."
 )
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
@@ -139,6 +145,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlBaseRun
     # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
+
+    # Optional workaround for mujoco_warp / Warp CUDA segfaults: force pure MuJoCo backend.
+    # This reduces performance but is often significantly more stable across driver/toolkit combos.
+    if args_cli.mujoco_cpu and getattr(getattr(env_cfg, "sim", None), "newton_cfg", None) is not None:
+        solver_cfg = getattr(env_cfg.sim.newton_cfg, "solver_cfg", None)
+        if solver_cfg is not None and hasattr(solver_cfg, "use_mujoco_cpu"):
+            solver_cfg.use_mujoco_cpu = True
+            print("[INFO] Enabled 'use_mujoco_cpu=True' for Newton MJWarp solver (mujoco_warp disabled).")
 
     # multi-gpu training configuration
     if args_cli.distributed:
