@@ -76,6 +76,7 @@ if version.parse(installed_version) < version.parse(RSL_RL_VERSION):
 import gymnasium as gym
 import logging
 import os
+import time
 import torch
 from datetime import datetime
 
@@ -158,7 +159,25 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlBaseRun
     env_cfg.log_dir = log_dir
 
     # create isaac environment
+    num_envs = getattr(getattr(env_cfg, "scene", None), "num_envs", None)
+    sim_device = getattr(getattr(env_cfg, "sim", None), "device", None)
+    has_newton_cfg = getattr(getattr(env_cfg, "sim", None), "newton_cfg", None) is not None
+    print(
+        f"[INFO] Creating environment '{args_cli.task}'"
+        + (f" with num_envs: {num_envs}" if num_envs is not None else "")
+        + (f" on device: {sim_device}" if sim_device is not None else "")
+        + (" (backend: newton/MJWarp)" if has_newton_cfg else "")
+        + "."
+    )
+    if has_newton_cfg and isinstance(num_envs, int) and num_envs >= 2048:
+        print(
+            "[INFO] Newton (MuJoCo-Warp / MJWarp) startup can be slow on first run due to JIT compilation and cache writes "
+            "(it may look stuck with no new logs for several minutes). If needed, try a smaller '--num_envs' (e.g. 256/512) "
+            "and set 'WARP_CACHE_PATH' and 'CUDA_CACHE_PATH' to a local disk (e.g. /tmp) to avoid slow network filesystems."
+        )
+    t_env_create = time.perf_counter()
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+    print(f"[INFO] Environment created in {time.perf_counter() - t_env_create:.1f}s")
 
     # save resume path before creating a new log_dir
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
