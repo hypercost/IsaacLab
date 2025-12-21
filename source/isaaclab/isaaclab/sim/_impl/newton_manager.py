@@ -360,6 +360,12 @@ class NewtonManager:
         NewtonManager._solver_type = solver_cfg.pop("solver_type")
 
         if NewtonManager._solver_type == "mujoco_warp":
+            # Workaround for pure MuJoCo (CPU) backend:
+            # newton's SolverMuJoCo requires separate_worlds=True when the model contains multiple worlds/envs.
+            # IsaacLab tasks commonly use multi-world models (num_envs > 1). Default to True to avoid:
+            #   ValueError: separate_worlds=False is only supported for single-world models.
+            if solver_cfg.get("use_mujoco_cpu", False) and getattr(model, "num_envs", 1) not in (None, 1):
+                solver_cfg.setdefault("separate_worlds", True)
             return SolverMuJoCo(model, **solver_cfg)
         elif NewtonManager._solver_type == "xpbd":
             return SolverXPBD(model, **solver_cfg)

@@ -30,6 +30,24 @@ parser.add_argument(
     help="(Newton/MJWarp only) Use pure MuJoCo (CPU) backend instead of mujoco_warp to avoid Warp CUDA kernels.",
 )
 parser.add_argument(
+    "--no_cuda_graph",
+    action="store_true",
+    default=False,
+    help="(Newton only) Disable CUDA graph capture during startup. Useful to debug/avoid crashes during graph capture.",
+)
+parser.add_argument(
+    "--no_mujoco_contacts",
+    action="store_true",
+    default=False,
+    help="(Newton/MJWarp only) Disable MuJoCo's internal contact solver and use Newton's collision pipeline instead.",
+)
+parser.add_argument(
+    "--disable_mujoco_contacts",
+    action="store_true",
+    default=False,
+    help="(Newton/MJWarp only) Disable contact computation inside MuJoCo/MJWarp (may break locomotion tasks).",
+)
+parser.add_argument(
     "--agent", type=str, default="rsl_rl_cfg_entry_point", help="Name of the RL agent configuration entry point."
 )
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
@@ -146,6 +164,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlBaseRun
     env_cfg.seed = agent_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
+    # Disable CUDA graph capture if requested (can avoid crashes during graph capture warmup step).
+    if args_cli.no_cuda_graph and getattr(getattr(env_cfg, "sim", None), "newton_cfg", None) is not None:
+        env_cfg.sim.newton_cfg.use_cuda_graph = False
+        print("[INFO] Disabled Newton CUDA graph capture (use_cuda_graph=False).")
+
     # Optional workaround for mujoco_warp / Warp CUDA segfaults: force pure MuJoCo backend.
     # This reduces performance but is often significantly more stable across driver/toolkit combos.
     if args_cli.mujoco_cpu and getattr(getattr(env_cfg, "sim", None), "newton_cfg", None) is not None:
@@ -153,6 +176,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlBaseRun
         if solver_cfg is not None and hasattr(solver_cfg, "use_mujoco_cpu"):
             solver_cfg.use_mujoco_cpu = True
             print("[INFO] Enabled 'use_mujoco_cpu=True' for Newton MJWarp solver (mujoco_warp disabled).")
+    # Optionally route contact handling away from MuJoCo-Warp (often the source of segfaults in narrowphase).
+    if getattr(getattr(env_cfg, "sim", None), "newton_cfg", None) is not None:
+        solver_cfg = getattr(env_cfg.sim.newton_cfg, "solver_cfg", None)
+        if solver_cfg is not None:
+            if args_cli.no_mujoco_contacts and hasattr(solver_cfg, "use_mujoco_contacts"):
+                solver_cfg.use_mujoco_contacts = False
+                print("[INFO] Set 'use_mujoco_contacts=False' (Newton collision pipeline will be used).")
+            if args_cli.disable_mujoco_contacts and hasattr(solver_cfg, "disable_contacts"):
+                solver_cfg.disable_contacts = True
+                print("[INFO] Set 'disable_contacts=True' for MuJoCo/MJWarp (contacts disabled).")
 
     # multi-gpu training configuration
     if args_cli.distributed:
