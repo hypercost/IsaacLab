@@ -78,6 +78,7 @@ import logging
 import os
 import time
 import torch
+import faulthandler
 from datetime import datetime
 
 from rsl_rl.runners import DistillationRunner, OnPolicyRunner
@@ -108,6 +109,20 @@ torch.backends.cudnn.benchmark = False
 
 # import logger
 logger = logging.getLogger(__name__)
+
+# Optional: enable lightweight stack dumps to debug "stuck" startups.
+# Usage:
+#   export ISAACLAB_DUMP_STACKS=1          # periodically prints Python stacks
+#   export ISAACLAB_DUMP_STACKS_SECS=120   # interval seconds (default: 120)
+#   kill -USR1 <pid>                      # on-demand stack dump (also works if periodic disabled)
+faulthandler.enable(all_threads=True)
+if os.environ.get("ISAACLAB_DUMP_STACKS", "0") not in ("0", "", "false", "False", "no", "No"):
+    try:
+        interval_s = int(os.environ.get("ISAACLAB_DUMP_STACKS_SECS", "120"))
+    except ValueError:
+        interval_s = 120
+    # Dump tracebacks repeatedly; prints to stderr.
+    faulthandler.dump_traceback_later(interval_s, repeat=True)
 
 
 @hydra_task_config(args_cli.task, args_cli.agent)
