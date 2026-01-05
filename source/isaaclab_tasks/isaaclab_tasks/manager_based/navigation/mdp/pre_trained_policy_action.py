@@ -184,5 +184,5 @@ class PreTrainedPolicyActionCfg(ActionTermCfg):
     """Low level action configuration."""
     low_level_observations: ObservationGroupCfg = MISSING
     """Low level observation configuration."""
-    debug_vis: bool = True
-    """Whether to visualize debug information. Defaults to False."""
+    debug_vis: bool = False
+    """Whether to visualize debug information."""

@@ -122,8 +122,11 @@ class ActionTerm(ManagerTermBase):
         # check if debug visualization is supported
         if not self.has_debug_vis_implementation:
             return False
-
-        import omni.kit.app
+        # debug visualization requires Omniverse UI (omni.kit). In standalone mode this module doesn't exist.
+        try:
+            import omni.kit.app  # noqa: F401
+        except ModuleNotFoundError:
+            return False
 
         # toggle debug visualization objects
         self._set_debug_vis_impl(debug_vis)
