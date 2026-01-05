@@ -135,6 +135,11 @@ class NavigationEnvCfg(ManagerBasedRLEnvCfg):
     def __post_init__(self):
         """Post initialization."""
 
+        # ensure we inherit the same Newton solver settings as the low-level locomotion environment
+        # (otherwise, Navigation would silently fall back to default NewtonCfg parameters)
+        self.sim.newton_cfg = LOW_LEVEL_ENV_CFG.sim.newton_cfg
+        self.sim.physics_material = LOW_LEVEL_ENV_CFG.sim.physics_material
+
         self.sim.dt = LOW_LEVEL_ENV_CFG.sim.dt
         self.sim.render_interval = LOW_LEVEL_ENV_CFG.decimation
         self.decimation = LOW_LEVEL_ENV_CFG.decimation * 10
