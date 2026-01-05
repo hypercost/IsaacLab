@@ -145,11 +145,12 @@ class NavigationEnvCfg(ManagerBasedRLEnvCfg):
         self.decimation = LOW_LEVEL_ENV_CFG.decimation * 10
         self.episode_length_s = self.commands.pose_command.resampling_time_range[1]
 
-        if self.scene.height_scanner is not None:
-            self.scene.height_scanner.update_period = (
-                self.actions.pre_trained_policy_action.low_level_decimation * self.sim.dt
-            )
-        if self.scene.contact_forces is not None:
+        # Some low-level scenes may not define a height scanner (e.g. Newton-only scenes).
+        height_scanner = getattr(self.scene, "height_scanner", None)
+        if height_scanner is not None:
+            height_scanner.update_period = self.actions.pre_trained_policy_action.low_level_decimation * self.sim.dt
+
+        if getattr(self.scene, "contact_forces", None) is not None:
             self.scene.contact_forces.update_period = self.sim.dt
 
 
