@@ -151,6 +151,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlBaseRun
                     record_to_rrd=record_path,
                     # Prefer offline recording in play scripts (works well on headless servers).
                     serve_web_viewer=False,
+                    spawn_viewer=False,
                     # Keep history so the recording has an explicit timeline.
                     keep_historical_data=True,
                     keep_scalar_history=True,

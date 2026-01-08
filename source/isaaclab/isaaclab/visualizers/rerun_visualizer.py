@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import logging
+import inspect
+import os
 from typing import Any
 
 from .rerun_visualizer_cfg import RerunVisualizerCfg
@@ -41,18 +43,59 @@ class NewtonViewerRerun(ViewerRerun if _RERUN_AVAILABLE else object):
         keep_historical_data: bool = False,
         keep_scalar_history: bool = True,
         record_to_rrd: str | None = None,
+        spawn_viewer: bool = True,
         metadata: dict | None = None,
     ):
         """Initialize Newton ViewerRerun wrapper."""
-        # Call parent with Newton parameters
-        super().__init__(
-            app_id=app_id,
-            web_port=web_port,
-            serve_web_viewer=serve_web_viewer,
-            keep_historical_data=keep_historical_data,
-            keep_scalar_history=keep_scalar_history,
-            record_to_rrd=record_to_rrd,
-        )
+        # Many environments run fully headless (no DISPLAY/WAYLAND). Spawning a viewer UI can fail
+        # with winit EventLoopError. When recording to .rrd, default to not spawning the viewer.
+        if record_to_rrd and not serve_web_viewer:
+            spawn_viewer = False
+
+        # Call parent while being resilient to version differences in newton.viewer.ViewerRerun.
+        # We only pass args that exist in the parent's __init__ signature.
+        parent_init = super().__init__
+        sig = None
+        try:
+            sig = inspect.signature(parent_init)
+        except (TypeError, ValueError):
+            sig = None
+
+        candidate_kwargs = {
+            "app_id": app_id,
+            "web_port": web_port,
+            "serve_web_viewer": serve_web_viewer,
+            "keep_historical_data": keep_historical_data,
+            "keep_scalar_history": keep_scalar_history,
+            "record_to_rrd": record_to_rrd,
+            # common variants across SDKs/wrappers
+            "spawn": spawn_viewer,
+            "spawn_viewer": spawn_viewer,
+            "open_viewer": spawn_viewer,
+            "launch_viewer": spawn_viewer,
+        }
+        init_kwargs = {}
+        if sig is not None:
+            params = sig.parameters
+            init_kwargs = {k: v for k, v in candidate_kwargs.items() if k in params}
+        else:
+            # Best-effort fallback: pass only the minimal set we previously assumed existed.
+            init_kwargs = {
+                "app_id": app_id,
+                "web_port": web_port,
+                "serve_web_viewer": serve_web_viewer,
+                "keep_historical_data": keep_historical_data,
+                "keep_scalar_history": keep_scalar_history,
+                "record_to_rrd": record_to_rrd,
+            }
+
+        # As an extra safety net, disable viewer spawning when no display is present.
+        if record_to_rrd and ("DISPLAY" not in os.environ and "WAYLAND_DISPLAY" not in os.environ):
+            for k in ("spawn", "spawn_viewer", "open_viewer", "launch_viewer"):
+                if k in init_kwargs:
+                    init_kwargs[k] = False
+
+        parent_init(**init_kwargs)
 
         # Isaac Lab state
         self._metadata = metadata or {}
@@ -156,6 +199,7 @@ class RerunVisualizer(Visualizer):
                 keep_historical_data=self.cfg.keep_historical_data,
                 keep_scalar_history=self.cfg.keep_scalar_history,
                 record_to_rrd=self.cfg.record_to_rrd,
+                spawn_viewer=self.cfg.spawn_viewer,
                 metadata=metadata,
             )
 

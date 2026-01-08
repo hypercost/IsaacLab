@@ -44,3 +44,10 @@ class RerunVisualizerCfg(VisualizerCfg):
 
     record_to_rrd: str | None = None
     """Path to save .rrd recording file. None = no recording."""
+
+    spawn_viewer: bool = True
+    """Whether to spawn a viewer UI process/window.
+
+    In headless environments (no DISPLAY/WAYLAND), spawning a viewer can fail.
+    Set this to False when you only want to record to :attr:`record_to_rrd`.
+    """
