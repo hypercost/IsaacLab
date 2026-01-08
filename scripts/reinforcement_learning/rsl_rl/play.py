@@ -34,6 +34,16 @@ parser.add_argument(
     help="Use the pre-trained checkpoint from Nucleus.",
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
+# rerun visualizer recording options (Newton-only visualizer)
+parser.add_argument(
+    "--rerun_record_to_rrd",
+    type=str,
+    default=None,
+    help=(
+        "If set, save a Rerun recording to this .rrd file path (requires --visualizer rerun and Newton backend). "
+        "If a relative path is provided, it is resolved relative to the checkpoint's log directory."
+    ),
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -117,6 +127,25 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlBaseRun
 
     # set the log directory for the environment (works for all environment types)
     env_cfg.log_dir = log_dir
+
+    # configure rerun visualizer recording (if requested)
+    if args_cli.rerun_record_to_rrd is not None:
+        # Only meaningful if rerun visualizer is requested via AppLauncher.
+        if getattr(args_cli, "visualizer", None) is None or "rerun" not in args_cli.visualizer:
+            print(
+                "[WARN] --rerun_record_to_rrd was provided but --visualizer does not include 'rerun'. "
+                "No .rrd recording will be generated."
+            )
+        else:
+            from isaaclab.visualizers import RerunVisualizerCfg
+
+            record_path = args_cli.rerun_record_to_rrd
+            if not os.path.isabs(record_path):
+                record_path = os.path.join(log_dir, record_path)
+            os.makedirs(os.path.dirname(record_path), exist_ok=True)
+            # Ensure the simulation config contains a rerun visualizer config with recording enabled.
+            env_cfg.sim.visualizer_cfgs = [RerunVisualizerCfg(record_to_rrd=record_path)]
+            print(f"[INFO] Rerun recording will be saved to: {record_path}")
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
