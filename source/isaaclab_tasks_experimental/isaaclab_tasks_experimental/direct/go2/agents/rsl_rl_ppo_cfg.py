@@ -16,6 +16,8 @@ class UnitreeGo2DirectWarpPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     max_iterations = 1000
     save_interval = 50
     experiment_name = "unitree_go2_direct_warp"
+    # Explicitly keep TensorBoard logging enabled (default in base cfg).
+    logger = "tensorboard"
 
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
