@@ -100,6 +100,7 @@ class RerunVisualizer(Visualizer):
         self._is_initialized = False
         self._sim_time = 0.0
         self._scene_data_provider = None
+        self._num_frames_logged = 0
 
     def initialize(self, scene_data: dict[str, Any] | None = None) -> None:
         """Initialize visualizer with Newton Model and State."""
@@ -144,6 +145,8 @@ class RerunVisualizer(Visualizer):
         # Create Newton ViewerRerun wrapper
         try:
             if self.cfg.record_to_rrd:
+                # Use print to ensure visibility even if logging is configured to WARNING.
+                print(f"[RerunVisualizer] Recording enabled to: {self.cfg.record_to_rrd}")
                 logger.info(f"[RerunVisualizer] Recording enabled to: {self.cfg.record_to_rrd}")
 
             self._viewer = NewtonViewerRerun(
@@ -235,6 +238,7 @@ class RerunVisualizer(Visualizer):
 
         # End frame
         self._viewer.end_frame()
+        self._num_frames_logged += 1
 
     def close(self) -> None:
         """Clean up Rerun visualizer resources and finalize recordings."""
@@ -243,6 +247,11 @@ class RerunVisualizer(Visualizer):
 
         try:
             if self.cfg.record_to_rrd:
+                # Use print to ensure visibility even if logging is configured to WARNING.
+                print(
+                    f"[RerunVisualizer] Finalizing recording to: {self.cfg.record_to_rrd} "
+                    f"(frames_logged={self._num_frames_logged})"
+                )
                 logger.info(f"[RerunVisualizer] Finalizing recording to: {self.cfg.record_to_rrd}")
             self._viewer.close()
             logger.info("[RerunVisualizer] Closed successfully.")
@@ -251,10 +260,16 @@ class RerunVisualizer(Visualizer):
 
                 if os.path.exists(self.cfg.record_to_rrd):
                     size = os.path.getsize(self.cfg.record_to_rrd)
+                    print(
+                        f"[RerunVisualizer] Recording saved: {self.cfg.record_to_rrd} "
+                        f"({size} bytes, frames_logged={self._num_frames_logged})"
+                    )
                     logger.info(f"[RerunVisualizer] Recording saved: {self.cfg.record_to_rrd} ({size} bytes)")
                 else:
+                    print(f"[RerunVisualizer] Recording file not found: {self.cfg.record_to_rrd}")
                     logger.warning(f"[RerunVisualizer] Recording file not found: {self.cfg.record_to_rrd}")
         except Exception as e:
+            print(f"[RerunVisualizer] Error during close: {e}")
             logger.warning(f"[RerunVisualizer] Error during close: {e}")
 
         self._viewer = None

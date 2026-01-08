@@ -129,6 +129,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlBaseRun
     env_cfg.log_dir = log_dir
 
     # configure rerun visualizer recording (if requested)
+    record_path: str | None = None
     if args_cli.rerun_record_to_rrd is not None:
         # Only meaningful if rerun visualizer is requested via AppLauncher.
         if getattr(args_cli, "visualizer", None) is None or "rerun" not in args_cli.visualizer:
@@ -142,6 +143,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlBaseRun
             record_path = args_cli.rerun_record_to_rrd
             if not os.path.isabs(record_path):
                 record_path = os.path.join(log_dir, record_path)
+            record_path = os.path.abspath(record_path)
             os.makedirs(os.path.dirname(record_path), exist_ok=True)
             # Ensure the simulation config contains a rerun visualizer config with recording enabled.
             env_cfg.sim.visualizer_cfgs = [
