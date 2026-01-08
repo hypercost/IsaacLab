@@ -29,6 +29,13 @@ class RerunVisualizerCfg(VisualizerCfg):
     web_port: int = 9090
     """Port of the local rerun web viewer which is launched in the browser."""
 
+    serve_web_viewer: bool = True
+    """Whether to launch/serve the local Rerun web viewer.
+
+    When running headless (e.g. on a remote server) you may want to disable the web viewer and only
+    record to an ``.rrd`` file via :attr:`record_to_rrd`.
+    """
+
     keep_historical_data: bool = False
     """Keep transform history for time scrubbing (False = constant memory for training)."""
 

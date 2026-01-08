@@ -37,6 +37,7 @@ class NewtonViewerRerun(ViewerRerun if _RERUN_AVAILABLE else object):
         self,
         app_id: str | None = None,
         web_port: int | None = None,
+        serve_web_viewer: bool = True,
         keep_historical_data: bool = False,
         keep_scalar_history: bool = True,
         record_to_rrd: str | None = None,
@@ -47,7 +48,7 @@ class NewtonViewerRerun(ViewerRerun if _RERUN_AVAILABLE else object):
         super().__init__(
             app_id=app_id,
             web_port=web_port,
-            serve_web_viewer=True,  # always launch local web viewer in browser
+            serve_web_viewer=serve_web_viewer,
             keep_historical_data=keep_historical_data,
             keep_scalar_history=keep_scalar_history,
             record_to_rrd=record_to_rrd,
@@ -148,6 +149,7 @@ class RerunVisualizer(Visualizer):
             self._viewer = NewtonViewerRerun(
                 app_id=self.cfg.app_id,
                 web_port=self.cfg.web_port,
+                serve_web_viewer=self.cfg.serve_web_viewer,
                 keep_historical_data=self.cfg.keep_historical_data,
                 keep_scalar_history=self.cfg.keep_scalar_history,
                 record_to_rrd=self.cfg.record_to_rrd,
@@ -266,6 +268,11 @@ class RerunVisualizer(Visualizer):
         """
         if self._viewer is None:
             return False
+        # When recording to .rrd, we may be running headless without a web viewer.
+        # In that case, treat the visualizer as "running" so that SimulationContext keeps stepping it,
+        # ensuring the recording is populated and finalized on close.
+        if self.cfg.record_to_rrd:
+            return True
         return self._viewer.is_running()
 
     def is_training_paused(self) -> bool:

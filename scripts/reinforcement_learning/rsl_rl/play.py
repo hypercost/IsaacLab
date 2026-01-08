@@ -144,7 +144,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlBaseRun
                 record_path = os.path.join(log_dir, record_path)
             os.makedirs(os.path.dirname(record_path), exist_ok=True)
             # Ensure the simulation config contains a rerun visualizer config with recording enabled.
-            env_cfg.sim.visualizer_cfgs = [RerunVisualizerCfg(record_to_rrd=record_path)]
+            env_cfg.sim.visualizer_cfgs = [
+                RerunVisualizerCfg(
+                    record_to_rrd=record_path,
+                    # Prefer offline recording in play scripts (works well on headless servers).
+                    serve_web_viewer=False,
+                    # Keep history so the recording has an explicit timeline.
+                    keep_historical_data=True,
+                    keep_scalar_history=True,
+                )
+            ]
             print(f"[INFO] Rerun recording will be saved to: {record_path}")
 
     # create isaac environment
