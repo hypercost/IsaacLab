@@ -49,6 +49,13 @@ class DirectRLEnvCfg:
       creation is deterministic and behaves similarly across different runs.
     """
 
+    log_dir: str | None = None
+    """Directory for logging outputs (e.g. TensorBoard, videos, exported artifacts).
+
+    This is typically set by training scripts (for example `scripts/reinforcement_learning/rsl_rl/train.py`).
+    Defaults to None.
+    """
+
     decimation: int = MISSING
     """Number of control action updates @ sim dt per policy dt.
 

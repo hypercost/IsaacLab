@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import warp as wp
+
 from isaaclab_tasks_experimental.direct.locomotion.locomotion_env_warp import LocomotionWarpEnv
 
 from isaaclab_assets import UNITREE_GO2_CFG
@@ -20,6 +22,24 @@ from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 
 
+@wp.kernel
+def compute_joint_pos_targets(
+    input_actions: wp.array2d(dtype=wp.float32),
+    default_joint_pos: wp.array2d(dtype=wp.float32),
+    joint_pos_targets: wp.array2d(dtype=wp.float32),
+    action_scale: wp.float32,
+):
+    """Maps normalized actions to joint position targets.
+
+    Follows the manager-based velocity environments' control style:
+    q_des = q_default + scale * clamp(a, -1, 1)
+    """
+    env_index, joint_index = wp.tid()
+    joint_pos_targets[env_index, joint_index] = default_joint_pos[env_index, joint_index] + action_scale * wp.clamp(
+        input_actions[env_index, joint_index], -1.0, 1.0
+    )
+
+
 @configclass
 class UnitreeGo2WarpEnvCfg(DirectRLEnvCfg):
     """Direct locomotion task for Unitree Go2 (Warp backend).
@@ -30,20 +50,23 @@ class UnitreeGo2WarpEnvCfg(DirectRLEnvCfg):
 
     # env
     episode_length_s = 20.0
-    decimation = 2
-    action_scale = 0.5
+    # Match the non-warp (manager-based) Go2 velocity configs: dt=1/200, decimation=4.
+    decimation = 4
+    # Match manager-based Go2: JointPositionActionCfg(..., scale=0.25, use_default_offset=True)
+    action_scale = 0.25
     action_space = 12
     observation_space = 48  # 12 + 3 * num_dof (num_dof=12 for Go2)
     state_space = 0
 
     solver_cfg = MJWarpSolverCfg(
-        njmax=64,
-        nconmax=32,
-        ls_iterations=10,
-        ls_parallel=True,
+        # Keep consistent with `isaaclab_tasks/.../config/go2/flat_env_cfg.py`
+        njmax=65,
+        nconmax=35,
+        ls_iterations=20,
         cone="pyramidal",
         impratio=1,
-        update_data_interval=1,
+        ls_parallel=True,
+        integrator="implicit",
     )
     newton_cfg = NewtonCfg(
         solver_cfg=solver_cfg,
@@ -53,7 +76,7 @@ class UnitreeGo2WarpEnvCfg(DirectRLEnvCfg):
     )
 
     # simulation
-    sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation, newton_cfg=newton_cfg)
+    sim: SimulationCfg = SimulationCfg(dt=1 / 200, render_interval=decimation, newton_cfg=newton_cfg)
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="plane",
@@ -75,8 +98,8 @@ class UnitreeGo2WarpEnvCfg(DirectRLEnvCfg):
 
     # robot
     robot: ArticulationCfg = UNITREE_GO2_CFG.replace(prim_path="/World/envs/env_.*/Robot")
-    # Torque scaling per joint (3 DOF per leg). Kept simple/uniform by default.
-    joint_gears: list[float] = [23.5] * 12
+    # Not used for position-control mapping, but required by base class.
+    joint_gears: list[float] = [1.0] * 12
 
     heading_weight: float = 0.5
     up_weight: float = 0.1
@@ -87,7 +110,7 @@ class UnitreeGo2WarpEnvCfg(DirectRLEnvCfg):
     dof_vel_scale: float = 0.2
 
     death_cost: float = -2.0
-    termination_height: float = 0.20
+    termination_height: float = 0.18
 
     angular_velocity_scale: float = 0.25
     contact_force_scale: float = 0.1
@@ -98,4 +121,23 @@ class UnitreeGo2WarpEnv(LocomotionWarpEnv):
 
     def __init__(self, cfg: UnitreeGo2WarpEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
+
+        # Position-control targets (q_des) in joint space.
+        self.joint_pos_targets = wp.zeros(
+            (self.num_envs, self.robot.num_joints), dtype=wp.float32, device=self.sim.device
+        )
+
+    def _pre_physics_step(self, actions: wp.array) -> None:
+        """Map actions to joint position targets (manager-based style)."""
+        # keep last actions (for obs / reward)
+        self.actions.assign(actions)
+        wp.launch(
+            compute_joint_pos_targets,
+            dim=(self.num_envs, self.robot.num_joints),
+            inputs=[actions, self.robot.data.default_joint_pos, self.joint_pos_targets, wp.float32(self.cfg.action_scale)],
+        )
+
+    def _apply_action(self) -> None:
+        """Apply joint position targets (PD/DC-motor in the articulation)."""
+        self.robot.set_joint_position_target(self.joint_pos_targets, joint_mask=self._joint_dof_mask)
 
