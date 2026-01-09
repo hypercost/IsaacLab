@@ -52,6 +52,8 @@ class NewtonViewerRerun(ViewerRerun if _RERUN_AVAILABLE else object):
         if record_to_rrd and not serve_web_viewer:
             spawn_viewer = False
 
+        is_headless = ("DISPLAY" not in os.environ) and ("WAYLAND_DISPLAY" not in os.environ) and ("WAYLAND_SOCKET" not in os.environ)
+
         # Call parent while being resilient to version differences in newton.viewer.ViewerRerun.
         # We only pass args that exist in the parent's __init__ signature.
         parent_init = super().__init__
@@ -90,12 +92,43 @@ class NewtonViewerRerun(ViewerRerun if _RERUN_AVAILABLE else object):
             }
 
         # As an extra safety net, disable viewer spawning when no display is present.
-        if record_to_rrd and ("DISPLAY" not in os.environ and "WAYLAND_DISPLAY" not in os.environ):
+        if record_to_rrd and is_headless:
             for k in ("spawn", "spawn_viewer", "open_viewer", "launch_viewer"):
                 if k in init_kwargs:
                     init_kwargs[k] = False
 
-        parent_init(**init_kwargs)
+        # Strong headless safeguard:
+        # Some newton / rerun combinations will still try to spawn a GUI viewer even when passed spawn=False,
+        # leading to "winit EventLoopError: ... DISPLAY is set." on servers.
+        # We defensively patch rerun's spawn/init during ViewerRerun construction to force spawn=False.
+        if record_to_rrd and is_headless:
+            orig_rr_init = getattr(rr, "init", None)
+            orig_rr_spawn = getattr(rr, "spawn", None)
+
+            def _patched_rr_init(*args, **kwargs):  # noqa: ANN001
+                for key in ("spawn", "spawn_viewer", "open_viewer", "launch_viewer", "serve_web_viewer"):
+                    if key in kwargs:
+                        kwargs[key] = False
+                return orig_rr_init(*args, **kwargs) if orig_rr_init is not None else None
+
+            def _patched_rr_spawn(*args, **kwargs):  # noqa: ANN001
+                # no-op in headless recording mode
+                return None
+
+            try:
+                if orig_rr_init is not None:
+                    rr.init = _patched_rr_init  # type: ignore[assignment]
+                if orig_rr_spawn is not None:
+                    rr.spawn = _patched_rr_spawn  # type: ignore[assignment]
+                parent_init(**init_kwargs)
+            finally:
+                # Restore original functions
+                if orig_rr_init is not None:
+                    rr.init = orig_rr_init  # type: ignore[assignment]
+                if orig_rr_spawn is not None:
+                    rr.spawn = orig_rr_spawn  # type: ignore[assignment]
+        else:
+            parent_init(**init_kwargs)
 
         # Isaac Lab state
         self._metadata = metadata or {}
