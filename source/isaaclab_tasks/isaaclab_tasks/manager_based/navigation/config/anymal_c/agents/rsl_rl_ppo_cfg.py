@@ -16,6 +16,10 @@ class NavigationEnvPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     experiment_name = "anymal_c_navigation"
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=0.5,
+        # Use a log-std parameterization to guarantee std > 0 during training.
+        # This avoids occasional "normal expects all elements of std >= 0.0" crashes
+        # in some rsl-rl-lib versions when using unconstrained scalar std.
+        noise_std_type="log",
         actor_obs_normalization=False,
         critic_obs_normalization=False,
         actor_hidden_dims=[128, 128],

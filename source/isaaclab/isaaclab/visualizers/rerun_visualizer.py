@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import logging
+import inspect
+import os
 from typing import Any
 
 from .rerun_visualizer_cfg import RerunVisualizerCfg
@@ -37,21 +39,96 @@ class NewtonViewerRerun(ViewerRerun if _RERUN_AVAILABLE else object):
         self,
         app_id: str | None = None,
         web_port: int | None = None,
+        serve_web_viewer: bool = True,
         keep_historical_data: bool = False,
         keep_scalar_history: bool = True,
         record_to_rrd: str | None = None,
+        spawn_viewer: bool = True,
         metadata: dict | None = None,
     ):
         """Initialize Newton ViewerRerun wrapper."""
-        # Call parent with Newton parameters
-        super().__init__(
-            app_id=app_id,
-            web_port=web_port,
-            serve_web_viewer=True,  # always launch local web viewer in browser
-            keep_historical_data=keep_historical_data,
-            keep_scalar_history=keep_scalar_history,
-            record_to_rrd=record_to_rrd,
-        )
+        # Many environments run fully headless (no DISPLAY/WAYLAND). Spawning a viewer UI can fail
+        # with winit EventLoopError. When recording to .rrd, default to not spawning the viewer.
+        if record_to_rrd and not serve_web_viewer:
+            spawn_viewer = False
+
+        is_headless = ("DISPLAY" not in os.environ) and ("WAYLAND_DISPLAY" not in os.environ) and ("WAYLAND_SOCKET" not in os.environ)
+
+        # Call parent while being resilient to version differences in newton.viewer.ViewerRerun.
+        # We only pass args that exist in the parent's __init__ signature.
+        parent_init = super().__init__
+        sig = None
+        try:
+            sig = inspect.signature(parent_init)
+        except (TypeError, ValueError):
+            sig = None
+
+        candidate_kwargs = {
+            "app_id": app_id,
+            "web_port": web_port,
+            "serve_web_viewer": serve_web_viewer,
+            "keep_historical_data": keep_historical_data,
+            "keep_scalar_history": keep_scalar_history,
+            "record_to_rrd": record_to_rrd,
+            # common variants across SDKs/wrappers
+            "spawn": spawn_viewer,
+            "spawn_viewer": spawn_viewer,
+            "open_viewer": spawn_viewer,
+            "launch_viewer": spawn_viewer,
+        }
+        init_kwargs = {}
+        if sig is not None:
+            params = sig.parameters
+            init_kwargs = {k: v for k, v in candidate_kwargs.items() if k in params}
+        else:
+            # Best-effort fallback: pass only the minimal set we previously assumed existed.
+            init_kwargs = {
+                "app_id": app_id,
+                "web_port": web_port,
+                "serve_web_viewer": serve_web_viewer,
+                "keep_historical_data": keep_historical_data,
+                "keep_scalar_history": keep_scalar_history,
+                "record_to_rrd": record_to_rrd,
+            }
+
+        # As an extra safety net, disable viewer spawning when no display is present.
+        if record_to_rrd and is_headless:
+            for k in ("spawn", "spawn_viewer", "open_viewer", "launch_viewer"):
+                if k in init_kwargs:
+                    init_kwargs[k] = False
+
+        # Strong headless safeguard:
+        # Some newton / rerun combinations will still try to spawn a GUI viewer even when passed spawn=False,
+        # leading to "winit EventLoopError: ... DISPLAY is set." on servers.
+        # We defensively patch rerun's spawn/init during ViewerRerun construction to force spawn=False.
+        if record_to_rrd and is_headless:
+            orig_rr_init = getattr(rr, "init", None)
+            orig_rr_spawn = getattr(rr, "spawn", None)
+
+            def _patched_rr_init(*args, **kwargs):  # noqa: ANN001
+                for key in ("spawn", "spawn_viewer", "open_viewer", "launch_viewer", "serve_web_viewer"):
+                    if key in kwargs:
+                        kwargs[key] = False
+                return orig_rr_init(*args, **kwargs) if orig_rr_init is not None else None
+
+            def _patched_rr_spawn(*args, **kwargs):  # noqa: ANN001
+                # no-op in headless recording mode
+                return None
+
+            try:
+                if orig_rr_init is not None:
+                    rr.init = _patched_rr_init  # type: ignore[assignment]
+                if orig_rr_spawn is not None:
+                    rr.spawn = _patched_rr_spawn  # type: ignore[assignment]
+                parent_init(**init_kwargs)
+            finally:
+                # Restore original functions
+                if orig_rr_init is not None:
+                    rr.init = orig_rr_init  # type: ignore[assignment]
+                if orig_rr_spawn is not None:
+                    rr.spawn = orig_rr_spawn  # type: ignore[assignment]
+        else:
+            parent_init(**init_kwargs)
 
         # Isaac Lab state
         self._metadata = metadata or {}
@@ -99,6 +176,7 @@ class RerunVisualizer(Visualizer):
         self._is_initialized = False
         self._sim_time = 0.0
         self._scene_data_provider = None
+        self._num_frames_logged = 0
 
     def initialize(self, scene_data: dict[str, Any] | None = None) -> None:
         """Initialize visualizer with Newton Model and State."""
@@ -143,14 +221,18 @@ class RerunVisualizer(Visualizer):
         # Create Newton ViewerRerun wrapper
         try:
             if self.cfg.record_to_rrd:
+                # Use print to ensure visibility even if logging is configured to WARNING.
+                print(f"[RerunVisualizer] Recording enabled to: {self.cfg.record_to_rrd}")
                 logger.info(f"[RerunVisualizer] Recording enabled to: {self.cfg.record_to_rrd}")
 
             self._viewer = NewtonViewerRerun(
                 app_id=self.cfg.app_id,
                 web_port=self.cfg.web_port,
+                serve_web_viewer=self.cfg.serve_web_viewer,
                 keep_historical_data=self.cfg.keep_historical_data,
                 keep_scalar_history=self.cfg.keep_scalar_history,
                 record_to_rrd=self.cfg.record_to_rrd,
+                spawn_viewer=self.cfg.spawn_viewer,
                 metadata=metadata,
             )
 
@@ -233,6 +315,7 @@ class RerunVisualizer(Visualizer):
 
         # End frame
         self._viewer.end_frame()
+        self._num_frames_logged += 1
 
     def close(self) -> None:
         """Clean up Rerun visualizer resources and finalize recordings."""
@@ -241,6 +324,11 @@ class RerunVisualizer(Visualizer):
 
         try:
             if self.cfg.record_to_rrd:
+                # Use print to ensure visibility even if logging is configured to WARNING.
+                print(
+                    f"[RerunVisualizer] Finalizing recording to: {self.cfg.record_to_rrd} "
+                    f"(frames_logged={self._num_frames_logged})"
+                )
                 logger.info(f"[RerunVisualizer] Finalizing recording to: {self.cfg.record_to_rrd}")
             self._viewer.close()
             logger.info("[RerunVisualizer] Closed successfully.")
@@ -249,10 +337,16 @@ class RerunVisualizer(Visualizer):
 
                 if os.path.exists(self.cfg.record_to_rrd):
                     size = os.path.getsize(self.cfg.record_to_rrd)
+                    print(
+                        f"[RerunVisualizer] Recording saved: {self.cfg.record_to_rrd} "
+                        f"({size} bytes, frames_logged={self._num_frames_logged})"
+                    )
                     logger.info(f"[RerunVisualizer] Recording saved: {self.cfg.record_to_rrd} ({size} bytes)")
                 else:
+                    print(f"[RerunVisualizer] Recording file not found: {self.cfg.record_to_rrd}")
                     logger.warning(f"[RerunVisualizer] Recording file not found: {self.cfg.record_to_rrd}")
         except Exception as e:
+            print(f"[RerunVisualizer] Error during close: {e}")
             logger.warning(f"[RerunVisualizer] Error during close: {e}")
 
         self._viewer = None
@@ -266,6 +360,11 @@ class RerunVisualizer(Visualizer):
         """
         if self._viewer is None:
             return False
+        # When recording to .rrd, we may be running headless without a web viewer.
+        # In that case, treat the visualizer as "running" so that SimulationContext keeps stepping it,
+        # ensuring the recording is populated and finalized on close.
+        if self.cfg.record_to_rrd:
+            return True
         return self._viewer.is_running()
 
     def is_training_paused(self) -> bool:

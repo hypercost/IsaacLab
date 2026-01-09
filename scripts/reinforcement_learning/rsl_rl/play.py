@@ -34,6 +34,16 @@ parser.add_argument(
     help="Use the pre-trained checkpoint from Nucleus.",
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
+# rerun visualizer recording options (Newton-only visualizer)
+parser.add_argument(
+    "--rerun_record_to_rrd",
+    type=str,
+    default=None,
+    help=(
+        "If set, save a Rerun recording to this .rrd file path (requires --visualizer rerun and Newton backend). "
+        "If a relative path is provided, it is resolved relative to the checkpoint's log directory."
+    ),
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -118,90 +128,134 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlBaseRun
     # set the log directory for the environment (works for all environment types)
     env_cfg.log_dir = log_dir
 
+    # configure rerun visualizer recording (if requested)
+    record_path: str | None = None
+    if args_cli.rerun_record_to_rrd is not None:
+        # Only meaningful if rerun visualizer is requested via AppLauncher.
+        if getattr(args_cli, "visualizer", None) is None or "rerun" not in args_cli.visualizer:
+            print(
+                "[WARN] --rerun_record_to_rrd was provided but --visualizer does not include 'rerun'. "
+                "No .rrd recording will be generated."
+            )
+        else:
+            from isaaclab.visualizers import RerunVisualizerCfg
+
+            record_path = args_cli.rerun_record_to_rrd
+            if not os.path.isabs(record_path):
+                record_path = os.path.join(log_dir, record_path)
+            record_path = os.path.abspath(record_path)
+            os.makedirs(os.path.dirname(record_path), exist_ok=True)
+            # Ensure the simulation config contains a rerun visualizer config with recording enabled.
+            env_cfg.sim.visualizer_cfgs = [
+                RerunVisualizerCfg(
+                    record_to_rrd=record_path,
+                    # Prefer offline recording in play scripts (works well on headless servers).
+                    serve_web_viewer=False,
+                    spawn_viewer=False,
+                    # Keep history so the recording has an explicit timeline.
+                    keep_historical_data=True,
+                    keep_scalar_history=True,
+                )
+            ]
+            print(f"[INFO] Rerun recording will be saved to: {record_path}")
+
     # create isaac environment
-    env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
-
-    # wrap for video recording
-    if args_cli.video:
-        video_kwargs = {
-            "video_folder": os.path.join(log_dir, "videos", "play"),
-            "step_trigger": lambda step: step == 0,
-            "video_length": args_cli.video_length,
-            "disable_logger": True,
-        }
-        print("[INFO] Recording videos during training.")
-        print_dict(video_kwargs, nesting=4)
-        env = gym.wrappers.RecordVideo(env, **video_kwargs)
-
-    # wrap around environment for rsl-rl
-    env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
-
-    print(f"[INFO]: Loading model checkpoint from: {resume_path}")
-    # load previously trained model
-    if agent_cfg.class_name == "OnPolicyRunner":
-        runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
-    elif agent_cfg.class_name == "DistillationRunner":
-        runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
-    else:
-        raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
-    runner.load(resume_path)
-
-    # obtain the trained policy for inference
-    policy = runner.get_inference_policy(device=env.unwrapped.device)
-
-    # extract the neural network module
-    # we do this in a try-except to maintain backwards compatibility.
+    env = None
     try:
-        # version 2.3 onwards
-        policy_nn = runner.alg.policy
-    except AttributeError:
-        # version 2.2 and below
-        policy_nn = runner.alg.actor_critic
+        env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
 
-    # extract the normalizer
-    if hasattr(policy_nn, "actor_obs_normalizer"):
-        normalizer = policy_nn.actor_obs_normalizer
-    elif hasattr(policy_nn, "student_obs_normalizer"):
-        normalizer = policy_nn.student_obs_normalizer
-    else:
-        normalizer = None
-
-    # export policy to onnx/jit
-    export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
-    export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
-    export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
-
-    dt = env.unwrapped.step_dt
-
-    # reset environment
-    obs = env.get_observations()
-    timestep = 0
-    # simulate environment
-    while is_simulation_running(simulation_app, env.unwrapped.sim):
-        start_time = time.time()
-        # run everything in inference mode
-        with torch.inference_mode():
-            # agent stepping
-            actions = policy(obs)
-            # env stepping
-            obs, _, _, _ = env.step(actions)
+        # wrap for video recording
         if args_cli.video:
-            timestep += 1
-            # Exit the play loop after recording one video
-            if timestep == args_cli.video_length:
-                break
+            video_kwargs = {
+                "video_folder": os.path.join(log_dir, "videos", "play"),
+                "step_trigger": lambda step: step == 0,
+                "video_length": args_cli.video_length,
+                "disable_logger": True,
+            }
+            print("[INFO] Recording videos during training.")
+            print_dict(video_kwargs, nesting=4)
+            env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
-        # time delay for real-time evaluation
-        sleep_time = dt - (time.time() - start_time)
-        if args_cli.real_time and sleep_time > 0:
-            time.sleep(sleep_time)
+        # wrap around environment for rsl-rl
+        env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
-    # close the simulator
-    env.close()
+        print(f"[INFO]: Loading model checkpoint from: {resume_path}")
+        # load previously trained model
+        if agent_cfg.class_name == "OnPolicyRunner":
+            runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+        elif agent_cfg.class_name == "DistillationRunner":
+            runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+        else:
+            raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
+        runner.load(resume_path)
+
+        # obtain the trained policy for inference
+        policy = runner.get_inference_policy(device=env.unwrapped.device)
+
+        # extract the neural network module
+        # we do this in a try-except to maintain backwards compatibility.
+        try:
+            # version 2.3 onwards
+            policy_nn = runner.alg.policy
+        except AttributeError:
+            # version 2.2 and below
+            policy_nn = runner.alg.actor_critic
+
+        # extract the normalizer
+        if hasattr(policy_nn, "actor_obs_normalizer"):
+            normalizer = policy_nn.actor_obs_normalizer
+        elif hasattr(policy_nn, "student_obs_normalizer"):
+            normalizer = policy_nn.student_obs_normalizer
+        else:
+            normalizer = None
+
+        # export policy to onnx/jit
+        export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
+        export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
+        export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
+
+        dt = env.unwrapped.step_dt
+
+        # reset environment
+        obs = env.get_observations()
+        timestep = 0
+        # simulate environment
+        while is_simulation_running(simulation_app, env.unwrapped.sim):
+            start_time = time.time()
+            # run everything in inference mode
+            with torch.inference_mode():
+                # agent stepping
+                actions = policy(obs)
+                # env stepping
+                obs, _, _, _ = env.step(actions)
+            if args_cli.video:
+                timestep += 1
+                # Exit the play loop after recording one video
+                if timestep == args_cli.video_length:
+                    break
+
+            # time delay for real-time evaluation
+            sleep_time = dt - (time.time() - start_time)
+            if args_cli.real_time and sleep_time > 0:
+                time.sleep(sleep_time)
+    except KeyboardInterrupt:
+        print("[INFO] Interrupted by user (Ctrl-C). Closing environment and finalizing recordings...")
+    finally:
+        # Always try to close env to flush any recordings (e.g. rerun .rrd, video writers, etc.)
+        if env is not None:
+            try:
+                env.close()
+            except Exception as e:
+                print(f"[WARN] Exception while closing env: {e}")
 
 
 if __name__ == "__main__":
-    # run the main function
-    main()
-    # close sim app
-    close_simulation(simulation_app)
+    try:
+        # run the main function
+        main()
+    except KeyboardInterrupt:
+        # In case interrupt happens outside the main loop cleanup.
+        print("[INFO] Interrupted by user (Ctrl-C). Shutting down simulation...")
+    finally:
+        # close sim app (this also helps finalize visualizer recordings)
+        close_simulation(simulation_app)
